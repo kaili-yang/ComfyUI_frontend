@@ -13,7 +13,7 @@
 import { useEventListener } from '@vueuse/core'
 import { nextTick, ref } from 'vue'
 
-import { resolveNodeDefInputText, resolveNodeDefOutputText } from '@/i18n'
+import { resolveNodeDefSlotText, resolveNodeDefText } from '@/i18n'
 import {
   LiteGraph,
   isOverNodeInput,
@@ -71,7 +71,9 @@ function onIdle() {
     ctor.title_mode !== LiteGraph.NO_TITLE &&
     canvas.graph_mouse[1] < node.pos[1] // If we are over a node, but not within the node then we are on its title
   ) {
-    return showTooltip(nodeDef?.description)
+    return showTooltip(
+      resolveNodeDefText('description', nodeType, nodeDef?.description)
+    )
   }
 
   if (node.flags?.collapsed) return
@@ -85,7 +87,7 @@ function onIdle() {
   if (inputSlot !== -1) {
     const inputName = node.inputs[inputSlot].name
     return showTooltip(
-      resolveNodeDefInputText(
+      resolveNodeDefSlotText(
         'tooltip',
         nodeType,
         inputName,
@@ -102,7 +104,7 @@ function onIdle() {
   )
   if (outputSlot !== -1) {
     return showTooltip(
-      resolveNodeDefOutputText(
+      resolveNodeDefSlotText(
         'tooltip',
         nodeType,
         outputSlot,
@@ -114,7 +116,7 @@ function onIdle() {
   const widget = comfyApp.canvas.getWidgetAtCursor()
   // Dont show for DOM widgets, these use native browser tooltips as we dont get proper mouse events on these
   if (widget && !isDOMWidget(widget)) {
-    const translatedTooltip = resolveNodeDefInputText(
+    const translatedTooltip = resolveNodeDefSlotText(
       'tooltip',
       nodeType,
       widget.name,

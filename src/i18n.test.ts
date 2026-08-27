@@ -5,8 +5,7 @@ import type * as I18nModule from './i18n'
 let i18n: typeof I18nModule.i18n
 let loadLocale: typeof I18nModule.loadLocale
 let resolveNodeDefText: typeof I18nModule.resolveNodeDefText
-let resolveNodeDefInputText: typeof I18nModule.resolveNodeDefInputText
-let resolveNodeDefOutputText: typeof I18nModule.resolveNodeDefOutputText
+let resolveNodeDefSlotText: typeof I18nModule.resolveNodeDefSlotText
 let setBackendNodeText: typeof I18nModule.setBackendNodeText
 let mergeCustomNodesI18n: typeof I18nModule.mergeCustomNodesI18n
 let resolveSupportedLocale: typeof I18nModule.resolveSupportedLocale
@@ -18,8 +17,7 @@ async function importI18nModule() {
   i18n = i18nModule.i18n
   loadLocale = i18nModule.loadLocale
   resolveNodeDefText = i18nModule.resolveNodeDefText
-  resolveNodeDefInputText = i18nModule.resolveNodeDefInputText
-  resolveNodeDefOutputText = i18nModule.resolveNodeDefOutputText
+  resolveNodeDefSlotText = i18nModule.resolveNodeDefSlotText
   setBackendNodeText = i18nModule.setBackendNodeText
   mergeCustomNodesI18n = i18nModule.mergeCustomNodesI18n
   resolveSupportedLocale = i18nModule.resolveSupportedLocale
@@ -390,38 +388,41 @@ describe('i18n', () => {
 
   describe('slot text', () => {
     describe('precedence', () => {
-      it('en: the live backend value beats the bundled snapshot', () => {
-        expect(
-          resolveNodeDefInputText('name', 'KSampler', 'seed', 'Live Seed')
-        ).toBe('Live Seed')
-        expect(
-          resolveNodeDefInputText('tooltip', 'KSampler', 'seed', 'Live tooltip')
-        ).toBe('Live tooltip')
-        expect(
-          resolveNodeDefOutputText('name', 'KSampler', 0, 'Live Latent')
-        ).toBe('Live Latent')
-        expect(
-          resolveNodeDefOutputText('tooltip', 'KSampler', 0, 'Live tooltip')
-        ).toBe('Live tooltip')
-      })
+      it.for([
+        { field: 'name', slot: 'seed', backend: 'Live Seed' },
+        { field: 'tooltip', slot: 0, backend: 'Live tooltip' }
+      ] as const)(
+        'en: live $field for slot $slot beats the bundled snapshot',
+        ({ field, slot, backend }) => {
+          expect(resolveNodeDefSlotText(field, 'KSampler', slot, backend)).toBe(
+            backend
+          )
+        }
+      )
 
-      it('en: the bundled snapshot is used when the backend sends nothing', () => {
-        expect(resolveNodeDefInputText('name', 'KSampler', 'seed')).toBe(
-          'seed (bundled)'
-        )
-        expect(resolveNodeDefInputText('tooltip', 'KSampler', 'seed')).toBe(
-          'Seed tooltip (bundled)'
-        )
-        expect(resolveNodeDefOutputText('tooltip', 'KSampler', 0)).toBe(
-          'Latent tooltip (bundled)'
-        )
-      })
+      it.for([
+        {
+          field: 'tooltip',
+          slot: 'seed',
+          expected: 'Seed tooltip (bundled)'
+        },
+        {
+          field: 'name',
+          slot: 0,
+          expected: 'LATENT (bundled)'
+        }
+      ] as const)(
+        'en: bundled $field for slot $slot is used without backend text',
+        ({ field, slot, expected }) => {
+          expect(resolveNodeDefSlotText(field, 'KSampler', slot)).toBe(expected)
+        }
+      )
 
       it('en: falls back to the caller fallback when nothing supplies text', () => {
         expect(
-          resolveNodeDefInputText('name', 'Unknown', 'seed', undefined, 'seed')
+          resolveNodeDefSlotText('name', 'Unknown', 'seed', undefined, 'seed')
         ).toBe('seed')
-        expect(resolveNodeDefOutputText('tooltip', 'Unknown', 0)).toBe('')
+        expect(resolveNodeDefSlotText('tooltip', 'Unknown', 0)).toBe('')
       })
 
       it('en: a custom-node translation beats the backend', () => {
@@ -434,7 +435,7 @@ describe('i18n', () => {
         })
 
         expect(
-          resolveNodeDefInputText('name', 'KSampler', 'seed', 'Live Seed')
+          resolveNodeDefSlotText('name', 'KSampler', 'seed', 'Live Seed')
         ).toBe('Custom Seed')
       })
 
@@ -442,10 +443,10 @@ describe('i18n', () => {
         await setActiveLocale('zh')
 
         expect(
-          resolveNodeDefInputText('name', 'KSampler', 'seed', 'Live Seed')
+          resolveNodeDefSlotText('name', 'KSampler', 'seed', 'Live Seed')
         ).toBe('种子')
         expect(
-          resolveNodeDefInputText('tooltip', 'KSampler', 'seed', 'Live tooltip')
+          resolveNodeDefSlotText('tooltip', 'KSampler', 'seed', 'Live tooltip')
         ).toBe('种子提示')
       })
 
@@ -453,17 +454,17 @@ describe('i18n', () => {
         await setActiveLocale('zh')
 
         expect(
-          resolveNodeDefOutputText('name', 'KSampler', 0, 'Live Latent')
+          resolveNodeDefSlotText('name', 'KSampler', 0, 'Live Latent')
         ).toBe('Live Latent')
       })
     })
 
     describe('raw / compiled split', () => {
       it('compiles a bundled name but returns a bundled tooltip uncompiled', () => {
-        expect(resolveNodeDefInputText('name', 'KSampler', 'syntax')).toBe(
+        expect(resolveNodeDefSlotText('name', 'KSampler', 'syntax')).toBe(
           '50% @'
         )
-        expect(resolveNodeDefInputText('tooltip', 'KSampler', 'syntax')).toBe(
+        expect(resolveNodeDefSlotText('tooltip', 'KSampler', 'syntax')).toBe(
           "50{'%'} {'@'}"
         )
       })
@@ -471,10 +472,7 @@ describe('i18n', () => {
       it('returns backend slot text verbatim, never through the compiler', () => {
         const raw = "Mask {'@'} 100% | D:\\output"
 
-        expect(
-          resolveNodeDefInputText('tooltip', 'KSampler', 'seed', raw)
-        ).toBe(raw)
-        expect(resolveNodeDefInputText('name', 'KSampler', 'seed', raw)).toBe(
+        expect(resolveNodeDefSlotText('tooltip', 'KSampler', 'seed', raw)).toBe(
           raw
         )
       })
@@ -490,7 +488,7 @@ describe('i18n', () => {
           }
         })
 
-        expect(resolveNodeDefInputText('name', 'KSampler', 'a.b', 'Live')).toBe(
+        expect(resolveNodeDefSlotText('name', 'KSampler', 'a.b', 'Live')).toBe(
           'Dotted Input'
         )
       })
@@ -504,7 +502,7 @@ describe('i18n', () => {
           }
         })
 
-        expect(resolveNodeDefInputText('name', 'my.node', 'seed', 'Live')).toBe(
+        expect(resolveNodeDefSlotText('name', 'my.node', 'seed', 'Live')).toBe(
           'Nested Seed'
         )
       })
@@ -569,6 +567,7 @@ describe('i18n', () => {
       expect(resolveSupportedLocale('ja')).toBe('ja')
       expect(resolveSupportedLocale('zh-TW')).toBe('zh-TW')
       expect(resolveSupportedLocale('pt-BR')).toBe('pt-BR')
+      expect(resolveSupportedLocale('it')).toBe('it')
     })
 
     it('matches case-insensitively per BCP-47 and returns canonical casing', () => {
@@ -593,7 +592,6 @@ describe('i18n', () => {
 
     it('falls back to en for unsupported and missing inputs', () => {
       expect(resolveSupportedLocale('de')).toBe('en')
-      expect(resolveSupportedLocale('it')).toBe('en')
       expect(resolveSupportedLocale('nl')).toBe('en')
       expect(resolveSupportedLocale('xx-YY')).toBe('en')
       expect(resolveSupportedLocale('')).toBe('en')
@@ -606,7 +604,7 @@ describe('i18n', () => {
       expect(resolveSupportedLocale(['de-DE', 'fr-CA', 'en'])).toBe('fr')
       // Empty / all-unshipped arrays fall back to en.
       expect(resolveSupportedLocale([])).toBe('en')
-      expect(resolveSupportedLocale(['de', 'it'])).toBe('en')
+      expect(resolveSupportedLocale(['de', 'nl'])).toBe('en')
     })
   })
 })

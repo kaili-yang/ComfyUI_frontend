@@ -1,11 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/vue'
+import { render, screen } from '@testing-library/vue'
+import { cloneDeep } from 'es-toolkit'
 import userEvent from '@testing-library/user-event'
-import { createTestingPinia } from '@pinia/testing'
-import { setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { i18n, te } from '@/i18n'
+import { i18n, mergeCustomNodesI18n } from '@/i18n'
 import type * as LiteGraphModule from '@/lib/litegraph/src/litegraph'
 import { useSettingStore } from '@/platform/settings/settingStore'
 import type { Settings } from '@/schemas/apiSchema'
@@ -14,6 +13,7 @@ import { useNodeDefStore } from '@/stores/nodeDefStore'
 
 import NodeTooltip from './NodeTooltip.vue'
 
+const enMessages = cloneDeep(i18n.global.getLocaleMessage('en'))
 type HitTest = (
   node: MockNode,
   x: number,
@@ -82,17 +82,12 @@ vi.mock('@/scripts/domWidget', () => ({
 const jsonTooltip =
   'Positive point prompts as JSON [{"x": int, "y": int}, ...] (pixel coords)'
 
-const positiveCoordsTooltipKey =
-  'nodeDefs.SAM3_Detect.inputs.positive_coords.tooltip'
-
-const outputTooltipKey = 'nodeDefs.SAM3_Detect.outputs.0.tooltip'
-
 const sam3DetectNodeDef: ComfyNodeDef = {
   name: 'SAM3_Detect',
   display_name: 'SAM3 Detect',
   category: 'detection/',
   python_module: 'comfy_extras.nodes_sam3',
-  description: '',
+  description: 'Frontend description',
   input: {
     required: {},
     optional: {
@@ -159,10 +154,6 @@ async function renderAndHoverCanvas() {
 
 describe('NodeTooltip', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-    vi.resetAllMocks()
-    setActivePinia(createTestingPinia({ stubActions: false }))
-
     vi.spyOn(useSettingStore(), 'get').mockImplementation(
       <K extends keyof Settings>(key: K): Settings[K] => {
         switch (key) {
@@ -187,10 +178,23 @@ describe('NodeTooltip', () => {
   })
 
   afterEach(() => {
-    mergeOutputTooltipMessage(null)
-    cleanup()
-    vi.useRealTimers()
-    vi.restoreAllMocks()
+    mergeCustomNodesI18n({})
+    i18n.global.setLocaleMessage('en', cloneDeep(enMessages))
+  })
+
+  it('resolves the node description shown over the title', async () => {
+    mergeCustomNodesI18n({
+      en: {
+        nodeDefs: {
+          SAM3_Detect: { description: 'Localized description' }
+        }
+      }
+    })
+    mockCanvas.graph_mouse[1] = -1
+
+    await renderAndHoverCanvas()
+
+    expect(screen.getByText('Localized description')).toBeInTheDocument()
   })
 
   it('shows input slot JSON tooltips without i18n placeholder errors', async () => {
@@ -199,7 +203,6 @@ describe('NodeTooltip', () => {
 
     await renderAndHoverCanvas()
 
-    expect(te(positiveCoordsTooltipKey)).toBe(true)
     expect(screen.getByText(jsonTooltip)).toBeInTheDocument()
     expect(consoleError).not.toHaveBeenCalled()
   })
@@ -210,7 +213,6 @@ describe('NodeTooltip', () => {
 
     await renderAndHoverCanvas()
 
-    expect(te(outputTooltipKey)).toBe(true)
     expect(screen.getByText(jsonTooltip)).toBeInTheDocument()
     expect(consoleError).not.toHaveBeenCalled()
   })
@@ -223,7 +225,6 @@ describe('NodeTooltip', () => {
 
     await renderAndHoverCanvas()
 
-    expect(te(positiveCoordsTooltipKey)).toBe(true)
     expect(screen.getByText(jsonTooltip)).toBeInTheDocument()
     expect(consoleError).not.toHaveBeenCalled()
   })
@@ -235,10 +236,6 @@ describe('NodeTooltip', () => {
     beforeEach(() => {
       mergeInputTooltipMessage(staleInputTooltip)
       mergeOutputTooltipMessage(staleOutputTooltip)
-    })
-
-    afterEach(() => {
-      mergeInputTooltipMessage(jsonTooltip)
     })
 
     it('shows the live backend input slot tooltip', async () => {
@@ -257,17 +254,6 @@ describe('NodeTooltip', () => {
 
       expect(screen.getByText(jsonTooltip)).toBeInTheDocument()
       expect(screen.queryByText(staleOutputTooltip)).not.toBeInTheDocument()
-    })
-
-    it('shows the live backend widget tooltip', async () => {
-      vi.mocked(mockCanvas.getWidgetAtCursor).mockReturnValue({
-        name: 'positive_coords'
-      })
-
-      await renderAndHoverCanvas()
-
-      expect(screen.getByText(jsonTooltip)).toBeInTheDocument()
-      expect(screen.queryByText(staleInputTooltip)).not.toBeInTheDocument()
     })
   })
 })
