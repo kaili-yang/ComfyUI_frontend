@@ -1,19 +1,19 @@
 import { fromAny, fromPartial } from '@total-typescript/shoehorn'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useFeatureFlags } from '@/composables/useFeatureFlags'
 import { LGraph, LGraphNode } from '@/lib/litegraph/src/litegraph'
 import { LGraphEventMode } from '@/lib/litegraph/src/types/globalEnums'
 import type { IComboWidget } from '@/lib/litegraph/src/types/widgets'
 import type { AssetItem } from '@/platform/assets/schemas/assetSchema'
-import type * as AssetServiceModule from '@/platform/assets/services/assetService'
+import { assetService } from '@/platform/assets/services/assetService'
 import {
   createMediaNodeDef,
   seedMediaNodeDefs
 } from '@/platform/missingMedia/__fixtures__/promotedMedia'
-import type * as FetchJobsModule from '@/platform/remote/comfyui/jobs/fetchJobs'
+import { fetchHistoryPage } from '@/platform/remote/comfyui/jobs/fetchJobs'
 import type { JobListItem } from '@/platform/remote/comfyui/jobs/jobTypes'
 import { useNodeDefStore } from '@/stores/nodeDefStore'
-import type * as GraphTraversalUtil from '@/utils/graphTraversalUtil'
 import type { MissingMediaAssetResolver } from './missingMediaAssetResolver'
 import {
   isMissingMediaCandidateScopeActive,
@@ -29,18 +29,7 @@ import {
 } from './missingMediaGrouping'
 import type { MissingMediaCandidate } from './types'
 
-const { mockGetInputAssetsIncludingPublic, mockGetAssetsPageByTag } =
-  vi.hoisted(() => ({
-    mockGetInputAssetsIncludingPublic: vi.fn(),
-    mockGetAssetsPageByTag: vi.fn()
-  }))
-
-const { mockFetchHistoryPage } = vi.hoisted(() => ({
-  mockFetchHistoryPage: vi.fn()
-}))
-
-vi.mock('@/utils/graphTraversalUtil', async (importActual) => {
-  const actual = await importActual<typeof GraphTraversalUtil>()
+vi.mock<unknown>(import('@/utils/graphTraversalUtil'), () => {
   type TestNode = LGraphNode & { _testExecutionId?: string }
   type TestGraph = { _testNodes: TestNode[] }
   const isTestGraph = (graph: LGraph | TestGraph): graph is TestGraph =>
@@ -54,52 +43,33 @@ vi.mock('@/utils/graphTraversalUtil', async (importActual) => {
     node?.mode === LGraphEventMode.BYPASS
 
   return {
-    ...actual,
     collectAllNodes: (graph: LGraph | TestGraph) =>
-      isTestGraph(graph) ? graph._testNodes : actual.collectAllNodes(graph),
+      isTestGraph(graph) ? graph._testNodes : graph.nodes,
     getExecutionIdByNode: (graph: LGraph | TestGraph, node: TestNode) =>
+      isTestGraph(graph) ? executionIdForNode(node) : String(node.id),
+    getNodeByExecutionId: (graph: LGraph | TestGraph, executionId: string) =>
       isTestGraph(graph)
-        ? executionIdForNode(node)
-        : actual.getExecutionIdByNode(graph, node),
+        ? findNodeByExecutionId(graph, executionId)
+        : graph.nodes.find(
+            (node) => String(node.id) === executionId.split(':').at(-1)
+          ),
     isExecutionPathActive: (graph: LGraph | TestGraph, executionId: string) => {
-      if (!isTestGraph(graph)) {
-        return actual.isExecutionPathActive(graph, executionId)
-      }
       const path = executionId.split(':')
       return path.every((_, index) => {
         const prefix = path.slice(0, index + 1).join(':')
-        const node = findNodeByExecutionId(graph, prefix)
+        const node = isTestGraph(graph)
+          ? findNodeByExecutionId(graph, prefix)
+          : graph.nodes.find((node) => String(node.id) === prefix)
         return !!node && !isInactive(node)
       })
     }
   }
 })
 
-vi.mock('@/platform/assets/services/assetService', async () => {
-  const actual = await vi.importActual<typeof AssetServiceModule>(
-    '@/platform/assets/services/assetService'
-  )
+vi.mock(import('@/composables/useFeatureFlags'))
 
-  return {
-    ...actual,
-    assetService: {
-      ...actual.assetService,
-      getInputAssetsIncludingPublic: mockGetInputAssetsIncludingPublic,
-      getAssetsPageByTag: mockGetAssetsPageByTag
-    }
-  }
-})
-
-vi.mock('@/platform/remote/comfyui/jobs/fetchJobs', async () => {
-  const actual = await vi.importActual<typeof FetchJobsModule>(
-    '@/platform/remote/comfyui/jobs/fetchJobs'
-  )
-
-  return {
-    ...actual,
-    fetchHistoryPage: mockFetchHistoryPage
-  }
-})
+vi.mock(import('@/platform/assets/services/assetService'))
+vi.mock(import('@/platform/remote/comfyui/jobs/fetchJobs'))
 
 function makeCandidate(
   nodeId: string,
@@ -199,10 +169,17 @@ function makeHistoryJob(
 }
 
 beforeEach(() => {
+  vi.mocked(useFeatureFlags().flags).assetsEnabled = true
   seedMediaNodeDefs()
 })
 
+function disableAssetApi() {
+  vi.mocked(useFeatureFlags().flags).assetsEnabled = false
+}
+
 describe('scanNodeMediaCandidates', () => {
+  beforeEach(disableAssetApi)
+
   it('does not report a regular media widget whose input value comes from a link', () => {
     const graph = new LGraph()
     const upstream = new LGraphNode('ImageSource')
@@ -223,7 +200,7 @@ describe('scanNodeMediaCandidates', () => {
     const link = upstream.connect(0, node, 0)
     if (!link) throw new Error('Expected regular media input link')
 
-    expect(scanNodeMediaCandidates(graph, node, false)).toEqual([])
+    expect(scanNodeMediaCandidates(graph, node)).toEqual([])
   })
 
   it('returns candidate for a LoadImage node with missing image', () => {
@@ -235,7 +212,7 @@ describe('scanNodeMediaCandidates', () => {
     )
     const graph = makeGraph([node])
 
-    const result = scanNodeMediaCandidates(graph, node, false)
+    const result = scanNodeMediaCandidates(graph, node)
 
     expect(result).toHaveLength(1)
     expect(result[0]).toEqual({
@@ -257,7 +234,7 @@ describe('scanNodeMediaCandidates', () => {
     )
     const graph = makeGraph([node])
 
-    const result = scanNodeMediaCandidates(graph, node, false)
+    const result = scanNodeMediaCandidates(graph, node)
 
     expect(result).toEqual([])
   })
@@ -266,14 +243,15 @@ describe('scanNodeMediaCandidates', () => {
     const node = makeMediaNode(1, 'LoadImage', [], 0)
     const graph = makeGraph([node])
 
-    const result = scanNodeMediaCandidates(graph, node, false)
+    const result = scanNodeMediaCandidates(graph, node)
 
     expect(result).toEqual([])
   })
 
   it.for([false, true])(
-    'returns empty while a media upload is pending on the node (isCloud: %s)',
-    (isCloud) => {
+    'returns empty while a media upload is pending on the node (assetsEnabled: %s)',
+    (assetsEnabled) => {
+      vi.mocked(useFeatureFlags().flags).assetsEnabled = assetsEnabled
       const node = makeMediaNode(
         1,
         'LoadVideo',
@@ -283,7 +261,7 @@ describe('scanNodeMediaCandidates', () => {
       const graph = makeGraph([node])
       node.isUploading = true
 
-      const result = scanNodeMediaCandidates(graph, node, isCloud)
+      const result = scanNodeMediaCandidates(graph, node)
 
       expect(result).toEqual([])
     }
@@ -299,10 +277,10 @@ describe('scanNodeMediaCandidates', () => {
     const graph = makeGraph([node])
 
     node.isUploading = true
-    expect(scanNodeMediaCandidates(graph, node, false)).toEqual([])
+    expect(scanNodeMediaCandidates(graph, node)).toEqual([])
 
     node.isUploading = false
-    expect(scanNodeMediaCandidates(graph, node, false)).toEqual([
+    expect(scanNodeMediaCandidates(graph, node)).toEqual([
       expect.objectContaining({
         nodeType: 'LoadVideo',
         widgetName: 'file',
@@ -353,7 +331,7 @@ describe('scanNodeMediaCandidates', () => {
       )
       const graph = makeGraph([node])
 
-      const result = scanNodeMediaCandidates(graph, node, false)
+      const result = scanNodeMediaCandidates(graph, node)
 
       expect(result).toHaveLength(1)
       expect(result[0]).toMatchObject({
@@ -388,12 +366,12 @@ describe('scanNodeMediaCandidates', () => {
       const node = makeMediaNode(
         1,
         nodeType,
-        [makeMediaCombo(widgetName, value, ['other-file.png', value])],
+        [makeMediaCombo(widgetName, value, ['other-file.png'])],
         0
       )
       const graph = makeGraph([node])
 
-      const result = scanNodeMediaCandidates(graph, node, false)
+      const result = scanNodeMediaCandidates(graph, node)
 
       expect(result[0]).toMatchObject({
         nodeType,
@@ -401,6 +379,29 @@ describe('scanNodeMediaCandidates', () => {
         name: value,
         isMissing: undefined
       })
+    }
+  )
+
+  it.for([
+    { value: 'photo.png', options: ['other.png'] },
+    { value: 'photo.png', options: ['photo.png'] },
+    { value: 'photo.png [output]', options: ['photo.png [output]'] }
+  ])(
+    'defers $value to asset verification when the asset API is enabled',
+    ({ value, options }) => {
+      vi.mocked(useFeatureFlags().flags).assetsEnabled = true
+      const node = makeMediaNode(
+        1,
+        'LoadImage',
+        [makeMediaCombo('image', value, options)],
+        0
+      )
+
+      const result = scanNodeMediaCandidates(makeGraph([node]), node)
+
+      expect(result).toEqual([
+        expect.objectContaining({ name: value, isMissing: undefined })
+      ])
     }
   )
 
@@ -415,7 +416,7 @@ describe('scanNodeMediaCandidates', () => {
       0
     )
 
-    const result = scanNodeMediaCandidates(makeGraph([node]), node, false)
+    const result = scanNodeMediaCandidates(makeGraph([node]), node)
 
     expect(result).toEqual([
       expect.objectContaining({
@@ -437,7 +438,7 @@ describe('scanNodeMediaCandidates', () => {
     )
     const graph = makeGraph([node])
 
-    const result = scanNodeMediaCandidates(graph, node, false)
+    const result = scanNodeMediaCandidates(graph, node)
 
     expect(result[0]).toMatchObject({
       name: 'photo.png [input]',
@@ -454,7 +455,7 @@ describe('scanNodeMediaCandidates', () => {
     )
     const graph = makeGraph([node])
 
-    const result = scanNodeMediaCandidates(graph, node, false)
+    const result = scanNodeMediaCandidates(graph, node)
 
     expect(result[0]).toMatchObject({
       name: 'photo.png[input]',
@@ -511,6 +512,8 @@ describe('isMissingMediaCandidateScopeActive', () => {
 })
 
 describe('scanAllMediaCandidates', () => {
+  beforeEach(disableAssetApi)
+
   it('skips muted nodes (mode === NEVER)', () => {
     const node = makeMediaNode(
       1,
@@ -518,7 +521,7 @@ describe('scanAllMediaCandidates', () => {
       [makeMediaCombo('image', 'photo.png', ['other.png'])],
       2 // NEVER
     )
-    const result = scanAllMediaCandidates(makeGraph([node]), false)
+    const result = scanAllMediaCandidates(makeGraph([node]))
     expect(result).toHaveLength(0)
   })
 
@@ -529,7 +532,7 @@ describe('scanAllMediaCandidates', () => {
       [makeMediaCombo('image', 'photo.png', ['other.png'])],
       4 // BYPASS
     )
-    const result = scanAllMediaCandidates(makeGraph([node]), false)
+    const result = scanAllMediaCandidates(makeGraph([node]))
     expect(result).toHaveLength(0)
   })
 
@@ -540,7 +543,7 @@ describe('scanAllMediaCandidates', () => {
       [makeMediaCombo('image', 'photo.png', ['other.png'])],
       0 // ALWAYS
     )
-    const result = scanAllMediaCandidates(makeGraph([node]), false)
+    const result = scanAllMediaCandidates(makeGraph([node]))
     expect(result).toHaveLength(1)
     expect(result[0].isMissing).toBe(true)
   })
@@ -658,9 +661,11 @@ describe('verifyMediaCandidates', () => {
     'blake3:2222222222222222222222222222222222222222222222222222222222222222'
 
   beforeEach(() => {
-    mockGetInputAssetsIncludingPublic.mockResolvedValue([])
-    mockGetAssetsPageByTag.mockResolvedValue(makeAssetPage([]))
-    mockFetchHistoryPage.mockResolvedValue({
+    vi.mocked(assetService.getAllAssetsByTag).mockResolvedValue([])
+    vi.mocked(assetService.getAssetsPageByTag).mockResolvedValue(
+      makeAssetPage([])
+    )
+    vi.mocked(fetchHistoryPage).mockResolvedValue({
       jobs: [],
       total: 0,
       offset: 0,
@@ -668,6 +673,115 @@ describe('verifyMediaCandidates', () => {
       hasMore: false
     })
   })
+
+  it.for([
+    { nodeType: 'LoadImage', widgetName: 'image', filename: 'photo.png' },
+    { nodeType: 'LoadVideo', widgetName: 'file', filename: 'clip.mp4' },
+    { nodeType: 'LoadAudio', widgetName: 'audio', filename: 'sound.wav' }
+  ])(
+    'resolves OSS $nodeType output from exact widget options without history',
+    async ({ nodeType, widgetName, filename }) => {
+      const value = `subfolder/${filename} [output]`
+      const node = makeMediaNode(1, nodeType, [
+        makeMediaCombo(widgetName, value, [value])
+      ])
+      disableAssetApi()
+      const candidates = scanNodeMediaCandidates(makeGraph([node]), node)
+
+      await verifyMediaCandidates(candidates, { isCloud: false })
+
+      expect(candidates).toEqual([
+        expect.objectContaining({ name: value, isMissing: false })
+      ])
+      expect(vi.mocked(fetchHistoryPage)).not.toHaveBeenCalled()
+    }
+  )
+
+  it.for([
+    { option: 'other.png', hasHistory: true, isMissing: false },
+    { option: 'other.png', hasHistory: false, isMissing: true },
+    { option: 'subfolder/photo.png', hasHistory: false, isMissing: true },
+    {
+      option: 'subfolder/photo.png [input]',
+      hasHistory: false,
+      isMissing: true
+    },
+    {
+      option: 'other/photo.png [output]',
+      hasHistory: false,
+      isMissing: true
+    }
+  ])(
+    'verifies OSS output with option $option and history present $hasHistory',
+    async ({ option, hasHistory, isMissing }) => {
+      const value = 'subfolder/photo.png [output]'
+      const node = makeMediaNode(1, 'LoadImage', [
+        makeMediaCombo('image', value, [option])
+      ])
+      disableAssetApi()
+      const candidates = scanNodeMediaCandidates(makeGraph([node]), node)
+      const jobs = hasHistory
+        ? [makeHistoryJob('photo.png', { subfolder: 'subfolder' })]
+        : []
+      vi.mocked(fetchHistoryPage).mockResolvedValue({
+        jobs,
+        total: jobs.length,
+        offset: 0,
+        limit: 200,
+        hasMore: false
+      })
+
+      await verifyMediaCandidates(candidates, { isCloud: false })
+
+      expect(candidates).toEqual([
+        expect.objectContaining({ name: value, isMissing })
+      ])
+    }
+  )
+
+  it('does not trust backend output options when Cloud assets are missing', async () => {
+    const value = 'photo.png [output]'
+    const node = makeMediaNode(1, 'LoadImage', [
+      makeMediaCombo('image', value, [value])
+    ])
+    const candidates = scanNodeMediaCandidates(makeGraph([node]), node)
+
+    await verifyMediaCandidates(candidates, { isCloud: true })
+
+    expect(candidates).toEqual([
+      expect.objectContaining({ name: value, isMissing: true })
+    ])
+  })
+
+  it.for([
+    {
+      unavailable: 'input',
+      sources: { inputAssets: null, generatedAssets: [] },
+      expected: { input: undefined, output: true }
+    },
+    {
+      unavailable: 'generated',
+      sources: { inputAssets: [], generatedAssets: null },
+      expected: { input: true, output: undefined }
+    }
+  ] as const)(
+    'leaves candidates unresolved when the $unavailable asset source failed',
+    async ({ sources, expected }) => {
+      const input = makeCandidate('1', 'photo.png', { isMissing: undefined })
+      const output = makeCandidate('2', 'render.png [output]', {
+        isMissing: undefined
+      })
+
+      await verifyMediaCandidates([input, output], {
+        isCloud: true,
+        resolveAssetSources: vi.fn(async () => sources)
+      })
+
+      expect({ input: input.isMissing, output: output.isMissing }).toEqual(
+        expected
+      )
+    }
+  )
 
   it('matches candidates by available input asset name or hash', async () => {
     const candidates = [
@@ -844,7 +958,7 @@ describe('verifyMediaCandidates', () => {
         isMissing: undefined
       })
     ]
-    mockGetAssetsPageByTag.mockResolvedValueOnce(
+    vi.mocked(assetService.getAssetsPageByTag).mockResolvedValueOnce(
       makeAssetPage([makeAsset('ComfyUI_00001_.mp4', outputHash)], {
         hasMore: true
       })
@@ -852,7 +966,7 @@ describe('verifyMediaCandidates', () => {
 
     await verifyMediaCandidates(candidates, { isCloud: true })
 
-    expect(mockGetAssetsPageByTag).toHaveBeenCalledOnce()
+    expect(vi.mocked(assetService.getAssetsPageByTag)).toHaveBeenCalledOnce()
     expect(candidates[0]).toMatchObject({
       name: `video/${outputHash} [output]`,
       isMissing: false
@@ -894,7 +1008,7 @@ describe('verifyMediaCandidates', () => {
       })
     ]
 
-    mockFetchHistoryPage.mockResolvedValueOnce({
+    vi.mocked(fetchHistoryPage).mockResolvedValueOnce({
       jobs: [makeHistoryJob('photo.png', { subfolder: 'subfolder' })],
       total: 1,
       offset: 0,
@@ -904,8 +1018,7 @@ describe('verifyMediaCandidates', () => {
 
     await verifyMediaCandidates(candidates, { isCloud: false })
 
-    expect(mockGetInputAssetsIncludingPublic).not.toHaveBeenCalled()
-    expect(mockFetchHistoryPage).toHaveBeenCalledWith(
+    expect(vi.mocked(fetchHistoryPage)).toHaveBeenCalledWith(
       expect.any(Function),
       200,
       0
@@ -968,21 +1081,18 @@ describe('verifyMediaCandidates', () => {
     expect(candidates[0].isMissing).toBe(true)
   })
 
-  it('uses public input assets by default', async () => {
+  it('uses store input assets by default', async () => {
     const candidates = [
       makeCandidate('1', existingHash, { isMissing: undefined })
     ]
-    mockGetInputAssetsIncludingPublic.mockResolvedValue([
+    vi.mocked(assetService.getAllAssetsByTag).mockResolvedValue([
       makeAsset('stored-photo.png', existingHash)
     ])
 
     await verifyMediaCandidates(candidates, { isCloud: true })
 
     expect(candidates[0].isMissing).toBe(false)
-    expect(mockGetInputAssetsIncludingPublic).toHaveBeenCalledWith(
-      expect.any(AbortSignal)
-    )
-    expect(mockFetchHistoryPage).not.toHaveBeenCalled()
+    expect(vi.mocked(fetchHistoryPage)).not.toHaveBeenCalled()
   })
 
   it('reads cloud output assets by tag for output candidates', async () => {
@@ -991,16 +1101,13 @@ describe('verifyMediaCandidates', () => {
     const candidates = [
       makeCandidate('1', `${outputHash} [output]`, { isMissing: undefined })
     ]
-    mockGetAssetsPageByTag.mockResolvedValue(
+    vi.mocked(assetService.getAssetsPageByTag).mockResolvedValue(
       makeAssetPage([makeAsset(outputHash)])
     )
 
     await verifyMediaCandidates(candidates, { isCloud: true })
 
-    expect(mockGetInputAssetsIncludingPublic).toHaveBeenCalledWith(
-      expect.any(AbortSignal)
-    )
-    expect(mockGetAssetsPageByTag).toHaveBeenCalledWith(
+    expect(vi.mocked(assetService.getAssetsPageByTag)).toHaveBeenCalledWith(
       'output',
       true,
       expect.objectContaining({
@@ -1009,7 +1116,7 @@ describe('verifyMediaCandidates', () => {
         signal: expect.any(AbortSignal)
       })
     )
-    expect(mockFetchHistoryPage).not.toHaveBeenCalled()
+    expect(vi.mocked(fetchHistoryPage)).not.toHaveBeenCalled()
     expect(candidates[0].isMissing).toBe(false)
   })
 
@@ -1019,7 +1126,7 @@ describe('verifyMediaCandidates', () => {
     const candidates = [
       makeCandidate('1', `${outputHash} [output]`, { isMissing: undefined })
     ]
-    mockFetchHistoryPage
+    vi.mocked(fetchHistoryPage)
       .mockResolvedValueOnce({
         jobs: Array.from({ length: 200 }, (_, index) =>
           makeHistoryJob(`other-${index}.png`)
@@ -1039,13 +1146,13 @@ describe('verifyMediaCandidates', () => {
 
     await verifyMediaCandidates(candidates, { isCloud: false })
 
-    expect(mockFetchHistoryPage).toHaveBeenNthCalledWith(
+    expect(vi.mocked(fetchHistoryPage)).toHaveBeenNthCalledWith(
       1,
       expect.any(Function),
       200,
       0
     )
-    expect(mockFetchHistoryPage).toHaveBeenNthCalledWith(
+    expect(vi.mocked(fetchHistoryPage)).toHaveBeenNthCalledWith(
       2,
       expect.any(Function),
       200,
@@ -1060,7 +1167,7 @@ describe('verifyMediaCandidates', () => {
         isMissing: undefined
       })
     ]
-    mockFetchHistoryPage.mockResolvedValueOnce({
+    vi.mocked(fetchHistoryPage).mockResolvedValueOnce({
       jobs: Array.from({ length: 200 }, (_, index) =>
         makeHistoryJob(`other-${index}.png`)
       ),
@@ -1072,7 +1179,7 @@ describe('verifyMediaCandidates', () => {
 
     await verifyMediaCandidates(candidates, { isCloud: false })
 
-    expect(mockFetchHistoryPage).toHaveBeenCalledOnce()
+    expect(vi.mocked(fetchHistoryPage)).toHaveBeenCalledOnce()
     expect(candidates[0].isMissing).toBe(true)
   })
 
@@ -1090,7 +1197,6 @@ describe('verifyMediaCandidates', () => {
     })
 
     expect(candidates[0].isMissing).toBeUndefined()
-    expect(mockGetInputAssetsIncludingPublic).not.toHaveBeenCalled()
   })
 
   it('respects abort signal after loading input assets', async () => {
@@ -1121,7 +1227,6 @@ describe('verifyMediaCandidates', () => {
     await verifyMediaCandidates(candidates, { isCloud: true })
 
     expect(candidates[0].isMissing).toBe(true)
-    expect(mockGetInputAssetsIncludingPublic).not.toHaveBeenCalled()
   })
 
   it('skips candidates already resolved as false', async () => {
@@ -1130,18 +1235,15 @@ describe('verifyMediaCandidates', () => {
     await verifyMediaCandidates(candidates, { isCloud: true })
 
     expect(candidates[0].isMissing).toBe(false)
-    expect(mockGetInputAssetsIncludingPublic).not.toHaveBeenCalled()
   })
 
   it('skips entirely when no pending candidates', async () => {
     const candidates = [makeCandidate('1', missingHash, { isMissing: true })]
 
     await verifyMediaCandidates(candidates, { isCloud: true })
-
-    expect(mockGetInputAssetsIncludingPublic).not.toHaveBeenCalled()
   })
 
-  it('loads public input assets for default verification', async () => {
+  it('loads store input assets for default verification', async () => {
     const candidates = [
       makeCandidate('1', 'public-photo.png', { isMissing: undefined })
     ]
@@ -1149,13 +1251,10 @@ describe('verifyMediaCandidates', () => {
       makeAsset(`asset-${index}.png`)
     )
     inputAssets[42] = makeAsset('public-asset-record', 'public-photo.png')
-    mockGetInputAssetsIncludingPublic.mockResolvedValue(inputAssets)
+    vi.mocked(assetService.getAllAssetsByTag).mockResolvedValue(inputAssets)
 
     await verifyMediaCandidates(candidates, { isCloud: true })
 
-    expect(mockGetInputAssetsIncludingPublic).toHaveBeenCalledWith(
-      expect.any(AbortSignal)
-    )
     expect(candidates[0].isMissing).toBe(false)
   })
 
@@ -1179,34 +1278,6 @@ describe('verifyMediaCandidates', () => {
       })
     ).resolves.toBeUndefined()
 
-    expect(candidates[0].isMissing).toBeUndefined()
-  })
-
-  it('forwards the signal to the default input asset fetcher and silences aborts', async () => {
-    const abortError = new Error('aborted')
-    abortError.name = 'AbortError'
-    const controller = new AbortController()
-    const candidates = [
-      makeCandidate('1', 'photo.png', { isMissing: undefined })
-    ]
-    let serviceSignal: AbortSignal | undefined
-    mockGetInputAssetsIncludingPublic.mockImplementationOnce(
-      async (signal?: AbortSignal) => {
-        serviceSignal = signal
-        controller.abort()
-        throw abortError
-      }
-    )
-
-    await expect(
-      verifyMediaCandidates(candidates, {
-        isCloud: true,
-        signal: controller.signal
-      })
-    ).resolves.toBeUndefined()
-
-    expect(serviceSignal).toBeInstanceOf(AbortSignal)
-    expect(serviceSignal?.aborted).toBe(true)
     expect(candidates[0].isMissing).toBeUndefined()
   })
 })
