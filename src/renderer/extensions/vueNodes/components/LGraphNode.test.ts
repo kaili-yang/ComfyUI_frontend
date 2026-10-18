@@ -222,6 +222,7 @@ describe('LGraphNode', () => {
     mockData.mockExecuting = false
     mockData.mockLgraphNode = null
     mockData.resizeCallback = null
+    app.dragOverNode = null
 
     const canvasStore = useCanvasStore()
     canvasStore.selectedNodeIds.clear()
@@ -426,10 +427,10 @@ describe('LGraphNode', () => {
     const { container } = renderLGraphNode({ nodeData: mockNodeData })
     const root = getNodeRoot(container)
 
-    expect(root).toHaveClass('outline-node-component-outline')
+    expect(root).toHaveClass('outline-foreground')
 
     const overlay = screen.getByTestId('node-state-outline-overlay')
-    expect(overlay).toHaveClass('border-node-component-outline')
+    expect(overlay).toHaveClass('border-foreground')
   })
 
   it('should render progress indicator when executing prop is true', () => {
@@ -438,10 +439,10 @@ describe('LGraphNode', () => {
     const { container } = renderLGraphNode({ nodeData: mockNodeData })
     const root = getNodeRoot(container)
 
-    expect(root).toHaveClass('outline-node-stroke-executing')
+    expect(root).toHaveClass('outline-primary')
 
     const overlay = screen.getByTestId('node-state-outline-overlay')
-    expect(overlay).toHaveClass('border-node-stroke-executing')
+    expect(overlay).toHaveClass('border-primary')
   })
 
   it('hides a linked core LoadImage input preview', () => {
@@ -563,9 +564,7 @@ describe('LGraphNode', () => {
       true
     renderLGraphNode({ nodeData: mockNodeData })
 
-    expect(screen.getByTestId('node-inner-wrapper')).toHaveClass(
-      'ring-warning-background'
-    )
+    expect(screen.getByTestId('node-inner-wrapper')).toHaveClass('ring-warning')
     expect(screen.getByRole('button', { name: 'Issues' })).toBeInTheDocument()
 
     errors.recordNodeErrors({
@@ -576,7 +575,7 @@ describe('LGraphNode', () => {
     await nextTick()
 
     expect(screen.getByTestId('node-inner-wrapper')).toHaveClass(
-      'ring-destructive-background'
+      'ring-destructive'
     )
     expect(screen.getByRole('button', { name: 'Error' })).toBeInTheDocument()
 
@@ -779,6 +778,24 @@ describe('LGraphNode', () => {
   })
 
   describe('handleDrop', () => {
+    it('clears the native file target when another handler already consumed the drop', async () => {
+      mockData.mockLgraphNode = {
+        onDragOver: vi.fn(),
+        isSubgraphNode: () => false
+      }
+      app.dragOverNode = {
+        id: toNodeId('previous-node'),
+        onDragDrop: vi.fn(() => false)
+      }
+      const { container } = renderLGraphNode({ nodeData: mockNodeData })
+      const event = new Event('drop', { bubbles: true, cancelable: true })
+      event.preventDefault()
+
+      await fireEvent(getNodeRoot(container), event)
+
+      expect(app.dragOverNode).toBeNull()
+    })
+
     it('should set app.dragOverNode and let event bubble', async () => {
       mockData.mockLgraphNode = {
         onDragOver: vi.fn(),
